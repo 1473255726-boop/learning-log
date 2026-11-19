@@ -1,0 +1,19 @@
+.vscode/
+.idea/
+*.tmp
+*.log
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
