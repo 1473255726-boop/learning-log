@@ -117,6 +117,113 @@ PyCharm 的提交按钮最终调用的就是它，所以必须先装。
 | setup 提示推送失败 | 建仓库时勾了 Add a README | 删掉仓库重建，什么都别勾 |
 | PyCharm 里 Git 选项是灰的 | PyCharm 没识别到 Git | 重启 PyCharm，或 `Ctrl+Alt+S` → Version Control → Git 里指定路径 |
 | 中文文件名显示成 `\346\226\207` | Git 默认转义 | `git config --global core.quotepath false` |
+| PyCharm 提示"无法刷新 / 解释器不可用" | 虚拟环境建在 DSH 工作区里，被沙箱隔离 | 见下方「疑难排查：解释器不可用」 |
+| 推送失败：`over proxy 127.0.0.1` | Clash Verge 没开，git 里却写死了代理 | 见下方「疑难排查：推送连不上 GitHub」 |
+
+---
+
+## 疑难排查：解释器不可用
+
+**现象**：PyCharm 右上角通知出现
+
+> ⚠ 无法刷新 ~\Documents\...\learning-log\.venv
+> 解释器不可用。请确保其存在，然后刷新。
+
+右下角状态栏的解释器也变灰/变红，运行按钮用不了。
+
+### 排查思路（这套方法对任何 IDE 报错都通用）
+
+1. **弹窗只是结论，日志里才是原因。**
+   打开 `Help → Show Log in Explorer`，找到 `idea.log`，搜 `Skeleton generation failed`。
+   本例真正的错误是：
+
+   ```
+   PermissionError: [Errno 13] Permission denied:
+   ...\JetBrains\PyCharm2026.3\python_stubs\-769667985\array.py
+   ```
+
+   意思是：解释器本身能启动，但 IDE 给它生成代码补全骨架时，**写不进自己的缓存目录**。
+
+2. **不要猜，做最小实验"只改一个变量"。**
+   同一条命令，换一个条件再跑一次：
+
+   | 实验 | 结果 |
+   |---|---|
+   | 用 `D:\...\Python315\python.exe` 跑同一个生成器 | 成功 |
+   | 把同一个 exe 复制到工作区里再跑 | 失败（Errno 13） |
+
+   两次一对比就知道：既不是 Python 坏了，也不是 PyCharm 坏了，问题在**程序所在的位置**。
+
+3. **根因**：`learning-log` 在 DeepSeek Harness 的会话工作区里。DSH 的沙箱会把**从工作区启动的可执行文件**按不可信代码隔离——只允许写工作区和临时目录，写 `%LOCALAPPDATA%` 会被拒绝。而 PyCharm 的骨架、包索引正好都在 `%LOCALAPPDATA%\JetBrains\` 下，所以每次启动都失败。
+
+4. **解决**：把虚拟环境的**真实目录**放到工作区外，工作区里只留一个"目录联接"指过去。
+   这样 PyCharm 的配置一个字都不用改，但解释器的真实路径已经在工作区外，沙箱就不再拦它。
+
+   本项目现在的布局：
+
+   | 位置 | 是什么 |
+   |---|---|
+   | `C:\Users\14732\venvs\learning-log` | 真实的虚拟环境（Python 3.15.2） |
+   | `learning-log\.venv` | 目录联接（junction），指向上面那个目录 |
+
+   以后若清理时误删了真实目录，`.venv` 会变成空壳，用下面两条命令重建即可（PowerShell，**不需要管理员**）：
+
+   ```powershell
+   & "D:\Users\14732\AppData\Local\Programs\Python\Python315\python.exe" -m venv C:\Users\14732\venvs\learning-log
+   cmd /c mklink /J "C:\Users\14732\Documents\deepseek-harness\default-workspace\learning-log\.venv" "C:\Users\14732\venvs\learning-log"
+   ```
+
+   重建后重启 PyCharm，它会自动重新生成骨架，通知里的警告随之消失。
+
+### 一条规矩
+
+工作区里只放**会被 git 提交的东西**：源码、笔记、模板。
+虚拟环境、解释器、缓存这类"属于这台机器"的工具，一律放在工作区外，项目里用一个目录联接指过去。
+这样 DSH 的沙箱、PyCharm 的索引互不打架。
+
+---
+
+## 疑难排查：推送连不上 GitHub
+
+**现象**：点推送后报
+
+> 推送失败 unable to access 'https://github.com/...': Failed to connect to github.com:443
+> **over proxy 127.0.0.1 after 0 ms**: Could not connect to server
+
+### 看关键词，不要看整句
+
+| 关键词 | 含义 |
+|---|---|
+| `over proxy 127.0.0.1` | Git 把请求交给了本机代理，不是直连 |
+| `after 0 ms` | **0 毫秒**就失败 = 连本地端口都没建成，说明代理软件没开，不是网速问题 |
+
+### 原因
+
+`~/.gitconfig` 里写死了代理 `http://127.0.0.1:7897`（Clash Verge 的默认端口）。
+代理软件一关，这个端口就没人监听，Git 每次都被弹回来。
+
+### 解决
+
+1. 打开 **Clash Verge**（开始菜单里搜得到），确认托盘有它的图标
+2. 确认端口在监听：PowerShell 里执行 `netstat -ano | findstr 7897`，有 `LISTENING` 才对
+3. 回 PyCharm 重新点推送
+
+如果哪天不需要代理（直连能通），把这两行配置清掉即可：
+
+```powershell
+git config --global --unset http.proxy
+git config --global --unset https.proxy
+```
+
+需要时再写回去：
+
+```powershell
+git config --global http.proxy http://127.0.0.1:7897
+git config --global https.proxy http://127.0.0.1:7897
+```
+
+> 小提示：PyCharm 的推送窗口右下角有「在控制台中显示详细信息」，点它能看到完整的 Git 输出，
+> 比弹窗里那半句话有用得多——和上面「解释器不可用」那一节是同一个思路：**找原始报错，再逐个排除**。
 
 ---
 
