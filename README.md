@@ -118,7 +118,7 @@ PyCharm 的提交按钮最终调用的就是它，所以必须先装。
 | PyCharm 里 Git 选项是灰的 | PyCharm 没识别到 Git | 重启 PyCharm，或 `Ctrl+Alt+S` → Version Control → Git 里指定路径 |
 | 中文文件名显示成 `\346\226\207` | Git 默认转义 | `git config --global core.quotepath false` |
 | PyCharm 提示"无法刷新 / 解释器不可用" | 虚拟环境建在 DSH 工作区里，被沙箱隔离 | 见下方「疑难排查：解释器不可用」 |
-| 推送失败：`over proxy 127.0.0.1` | Clash Verge 没开，git 里却写死了代理 | 见下方「疑难排查：推送连不上 GitHub」 |
+| 推送失败：`over proxy 127.0.0.1` / `schannel ... handshake` | 代理没开、节点挂了，或证书吊销检查超时 | 见下方「疑难排查：推送连不上 GitHub」 |
 
 ---
 
@@ -185,37 +185,46 @@ PyCharm 的提交按钮最终调用的就是它，所以必须先装。
 
 ## 疑难排查：推送连不上 GitHub
 
-**现象**：点推送后报
+推送失败有**两种完全不同的报错**，先分清是哪一种，别急着改配置。
 
-> 推送失败 unable to access 'https://github.com/...': Failed to connect to github.com:443
-> **over proxy 127.0.0.1 after 0 ms**: Could not connect to server
-
-### 看关键词，不要看整句
+### 报错 A：`over proxy 127.0.0.1 ... after 0 ms`
 
 | 关键词 | 含义 |
 |---|---|
 | `over proxy 127.0.0.1` | Git 把请求交给了本机代理，不是直连 |
 | `after 0 ms` | **0 毫秒**就失败 = 连本地端口都没建成，说明代理软件没开，不是网速问题 |
 
-### 原因
+原因：`~/.gitconfig` 里写死了 `http.proxy = http://127.0.0.1:7897`（Clash Verge 的端口），而代理软件没启动。
 
-`~/.gitconfig` 里写死了代理 `http://127.0.0.1:7897`（Clash Verge 的默认端口）。
-代理软件一关，这个端口就没人监听，Git 每次都被弹回来。
+### 报错 B：`schannel: failed to receive handshake` / `CRYPT_E_REVOCATION_OFFLINE`
 
-### 解决
+TCP 已经通了，卡在 TLS。Git for Windows 默认用 Windows 的 **schannel** 后端，握手时会去下载"证书吊销列表"，这一步在国内经常超时 → 整个握手被判失败。
 
-1. 打开 **Clash Verge**（开始菜单里搜得到），确认托盘有它的图标
-2. 确认端口在监听：PowerShell 里执行 `netstat -ano | findstr 7897`，有 `LISTENING` 才对
-3. 回 PyCharm 重新点推送
+### 第一步：先判断到底需不需要代理
 
-如果哪天不需要代理（直连能通），把这两行配置清掉即可：
+```powershell
+curl.exe --ssl-no-revoke -o NUL -w "%{http_code}`n" --max-time 15 https://github.com
+```
+
+- 返回 `200` → **直连可用**，别走代理
+- 返回 `000` 或超时 → 直连不通，才需要代理
+
+### 直连可用时的标准配置（本项目现在就是这个）
 
 ```powershell
 git config --global --unset http.proxy
 git config --global --unset https.proxy
+git config --global http.schannelCheckRevoke false
 ```
 
-需要时再写回去：
+> `schannelCheckRevoke false` 只是不查"证书是否已被吊销"，证书本身照样校验，安全性影响很小。
+> 它专治上面报错 B。
+
+### 如果确实必须走代理
+
+1. 确认代理软件在跑：`netstat -ano | findstr 7897`，要有 `LISTENING`
+2. 确认节点真的能用：Clash Verge 里做一次延迟测试；它的日志里如果满屏 `context deadline exceeded`，就是节点全挂了（端口开着也没用）
+3. 能用之后再写回：
 
 ```powershell
 git config --global http.proxy http://127.0.0.1:7897
